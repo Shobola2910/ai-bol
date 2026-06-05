@@ -1,35 +1,32 @@
 import { NextRequest, NextResponse } from "next/server";
-import OpenAI from "openai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 
 export const maxDuration = 60;
 
-const SYSTEM_PROMPT = `You are an expert at analyzing Bill of Lading (BOL) documents for FMCSA freight compliance.
+const PROMPT = `You are an expert at analyzing Bill of Lading (BOL) and Release Instructions documents for FMCSA freight compliance.
 
-Your job: find ALL dates in the BOL document and return them as structured JSON.
-
-For each date found, estimate its position on the image as percentage coordinates from the top-left corner (0,0) to bottom-right (100,100).
-
-IMPORTANT: Be precise about positions. The x,y values should represent the CENTER of the date text.
+Find ALL dates in this document and return their positions as percentage coordinates (0-100) from top-left corner.
 
 Return ONLY valid JSON, no other text:
 {
   "dates": [
     {
       "id": 1,
-      "text": "01/15/2024",
-      "label": "Pickup Date",
-      "x": 25.5,
-      "y": 18.0,
+      "text": "6/2/2026",
+      "label": "Date",
+      "x": 72,
+      "y": 8,
       "w": 12,
       "h": 2.5
     }
   ],
-  "docType": "Bill of Lading",
-  "totalDates": 3
+  "docType": "Release Instructions",
+  "totalDates": 2
 }`;
 
 export async function POST(req: NextRequest) {
-  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+
   try {
     const body = await req.json();
     const { imageBase64, mimeType } = body;
@@ -38,34 +35,19 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "No image provided" }, { status: 400 });
     }
 
-    const response = await openai.chat.completions.create({
-      model: "gpt-4o",
-      max_tokens: 1500,
-      messages: [
-        {
-          role: "system",
-          content: SYSTEM_PROMPT,
-        },
-        {
-          role: "user",
-          content: [
-            {
-              type: "image_url",
-              image_url: {
-                url: `data:${mimeType || "image/jpeg"};base64,${imageBase64}`,
-                detail: "high",
-              },
-            },
-            {
-              type: "text",
-              text: "Analyze this BOL document. Find every date. Return JSON only.",
-            },
-          ],
-        },
-      ],
-    });
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
-    const content = response.choices[0].message.content || "";
+    const result = await model.generateContent([
+      PROMPT,
+      {
+        inlineData: {
+          data: imageBase64,
+          mimeType: mimeType || "image/jpeg",
+        },
+      },
+    ]);
+
+    const content = result.response.text();
 
     const jsonMatch = content.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
