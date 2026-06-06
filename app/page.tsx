@@ -2,35 +2,51 @@
 
 import { useState, useRef, useCallback } from "react";
 
-interface EditResult {
-  understood: string;
+interface SingleEdit {
   oldText: string;
   newText: string;
   x: number;
   y: number;
   w: number;
   h: number;
-  fontSize: number;
   bold: boolean;
   bgColor?: string;
   fontFamily?: string;
 }
 
+interface EditResponse {
+  understood: string;
+  edits: SingleEdit[];
+}
+
+interface HistoryEntry {
+  understood: string;
+  edits: SingleEdit[];
+}
+
+interface ImgSize { w: number; h: number }
+
 type Step = "upload" | "prompt" | "processing" | "done";
 
 export default function Home() {
   const [step, setStep] = useState<Step>("upload");
-  const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
   const [imageBase64, setImageBase64] = useState<string | null>(null);
   const [mimeType, setMimeType] = useState("image/jpeg");
+  const [imgSize, setImgSize] = useState<ImgSize | null>(null);
   const [instruction, setInstruction] = useState("");
-  const [result, setResult] = useState<EditResult | null>(null);
   const [editedDataUrl, setEditedDataUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
-  const [history, setHistory] = useState<EditResult[]>([]);
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const getImgSize = (dataUrl: string): Promise<ImgSize> =>
+    new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
+      img.src = dataUrl;
+    });
 
   const processFile = useCallback(async (file: File) => {
     const isImage = file.type.startsWith("image/");
@@ -39,12 +55,13 @@ export default function Home() {
 
     if (isImage) {
       const reader = new FileReader();
-      reader.onload = (e) => {
+      reader.onload = async (e) => {
         const dataUrl = e.target?.result as string;
-        setImageDataUrl(dataUrl);
+        const size = await getImgSize(dataUrl);
         setEditedDataUrl(dataUrl);
         setImageBase64(dataUrl.split(",")[1]);
         setMimeType(file.type);
+        setImgSize(size);
         setStep("prompt");
         setHistory([]);
       };
@@ -61,17 +78,17 @@ export default function Home() {
       canvas.height = viewport.height;
       await page.render({ canvasContext: canvas.getContext("2d")!, viewport }).promise;
       const dataUrl = canvas.toDataURL("image/jpeg", 0.97);
-      setImageDataUrl(dataUrl);
       setEditedDataUrl(dataUrl);
       setImageBase64(dataUrl.split(",")[1]);
       setMimeType("image/jpeg");
+      setImgSize({ w: canvas.width, h: canvas.height });
       setStep("prompt");
       setHistory([]);
     }
   }, []);
 
-  const applyEditToCanvas = useCallback(
-    (baseDataUrl: string, edit: EditResult): Promise<string> => {
+  const applySingleEdit = useCallback(
+    (baseDataUrl: string, edit: SingleEdit): Promise<string> => {
       return new Promise((resolve) => {
         const img = new Image();
         img.onload = () => {
@@ -81,32 +98,57 @@ export default function Home() {
           const ctx = canvas.getContext("2d")!;
           ctx.drawImage(img, 0, 0);
 
-          const cx = (edit.x / 100) * canvas.width;
-          const cy = (edit.y / 100) * canvas.height;
-          const w = (edit.w / 100) * canvas.width;
-          const h = (edit.h / 100) * canvas.height;
+          const cx = edit.x;
+          const cy = edit.y;
+          const w = edit.w;
+          const h = edit.h;
 
-          // Sample actual background color from document (beats hardcoded white)
-          let bgColor = edit.bgColor ?? "#FFFFFF";
+          let bgR = 255, bgG = 255, bgB = 255;
           try {
-            const sampleX = Math.max(0, Math.min(canvas.width - 1, Math.round(cx - w / 2 - 8)));
-            const sampleY = Math.max(0, Math.min(canvas.height - 1, Math.round(cy)));
-            const px = ctx.getImageData(sampleX, sampleY, 1, 1).data;
-            bgColor = `rgb(${px[0]},${px[1]},${px[2]})`;
+            const stripX = Math.max(0, Math.round(cx - w / 2 - 20));
+            const stripY = Math.max(0, Math.round(cy - h / 2));
+            const stripW = Math.min(15, canvas.width - stripX);
+            const stripH = Math.max(1, Math.min(Math.round(h), canvas.height - stripY));
+            if (stripW > 0 && stripH > 0) {
+              const data = ctx.getImageData(stripX, stripY, stripW, stripH).data;
+              let r = 0, g = 0, b = 0;
+              const count = data.length / 4;
+              for (let i = 0; i < data.length; i += 4) {
+                r += data[i]; g += data[i + 1]; b += data[i + 2];
+              }
+              bgR = Math.round(r / count);
+              bgG = Math.round(g / count);
+              bgB = Math.round(b / count);
+            }
           } catch {
-            // fall back to Gemini-provided or white
+            if (edit.bgColor) {
+              const hex = edit.bgColor.replace("#", "");
+              bgR = parseInt(hex.substring(0, 2), 16);
+              bgG = parseInt(hex.substring(2, 4), 16);
+              bgB = parseInt(hex.substring(4, 6), 16);
+            }
           }
 
-          const pad = 4;
-          ctx.fillStyle = bgColor;
-          ctx.fillRect(cx - w / 2 - pad, cy - h / 2 - pad, w + pad * 2, h + pad * 2);
+          const pad = 5;
+          ctx.fillStyle = `rgb(${bgR},${bgG},${bgB})`;
+          ctx.fillRect(
+            Math.round(cx - w / 2 - pad),
+            Math.round(cy - h / 2 - pad),
+            Math.round(w + pad * 2),
+            Math.round(h + pad * 2)
+          );
 
-          // Match document font
-          const fontSizePx = h * 0.78;
-          const weight = edit.bold ? "bold" : "normal";
           const family = edit.fontFamily ?? "Arial";
+          const weight = edit.bold ? "bold" : "normal";
+          let fontSizePx = h * 0.78;
           ctx.font = `${weight} ${fontSizePx}px "${family}", Arial, sans-serif`;
-          ctx.fillStyle = "#1a1a1a";
+          const measured = ctx.measureText(edit.newText).width;
+          if (measured > w * 0.92 && measured > 0) {
+            fontSizePx = fontSizePx * (w * 0.92) / measured;
+            ctx.font = `${weight} ${fontSizePx}px "${family}", Arial, sans-serif`;
+          }
+
+          ctx.fillStyle = "#111111";
           ctx.textAlign = "center";
           ctx.textBaseline = "middle";
           ctx.fillText(edit.newText, cx, cy);
@@ -125,10 +167,14 @@ export default function Home() {
     setError(null);
 
     try {
-      // Always send the current edited image to Gemini
       const currentBase64 = editedDataUrl
         ? editedDataUrl.split(",")[1]
         : imageBase64;
+
+      let currentSize = imgSize;
+      if (editedDataUrl) {
+        currentSize = await getImgSize(editedDataUrl);
+      }
 
       const res = await fetch("/api/edit", {
         method: "POST",
@@ -137,23 +183,29 @@ export default function Home() {
           imageBase64: currentBase64,
           mimeType,
           instruction,
+          imgWidth: currentSize?.w,
+          imgHeight: currentSize?.h,
         }),
       });
 
-      const data: EditResult & { error?: string } = await res.json();
-      if (!res.ok || data.error) throw new Error(data.error || "Failed");
+      const data: EditResponse & { error?: string } = await res.json();
+      if (!res.ok || data.error) throw new Error((data as { error?: string }).error || "Failed");
+      if (!data.edits || data.edits.length === 0) throw new Error("No edits returned");
 
-      const newDataUrl = await applyEditToCanvas(editedDataUrl!, data);
-      setEditedDataUrl(newDataUrl);
-      setResult(data);
-      setHistory((prev) => [...prev, data]);
+      let workingUrl = editedDataUrl!;
+      for (const edit of data.edits) {
+        workingUrl = await applySingleEdit(workingUrl, edit);
+      }
+
+      setEditedDataUrl(workingUrl);
+      setHistory((prev) => [...prev, { understood: data.understood, edits: data.edits }]);
       setInstruction("");
       setStep("done");
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Error");
       setStep("prompt");
     }
-  }, [instruction, imageBase64, mimeType, editedDataUrl, applyEditToCanvas]);
+  }, [instruction, imageBase64, mimeType, editedDataUrl, imgSize, applySingleEdit]);
 
   const handleDownload = useCallback(() => {
     if (!editedDataUrl) return;
@@ -165,18 +217,16 @@ export default function Home() {
 
   const handleReset = useCallback(() => {
     setStep("upload");
-    setImageDataUrl(null);
     setImageBase64(null);
     setEditedDataUrl(null);
+    setImgSize(null);
     setInstruction("");
-    setResult(null);
     setHistory([]);
     setError(null);
   }, []);
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
-      {/* Header */}
       <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div className="w-9 h-9 bg-blue-600 rounded-lg flex items-center justify-center font-bold text-white text-sm">
@@ -197,7 +247,6 @@ export default function Home() {
         )}
       </header>
 
-      {/* Upload step */}
       {step === "upload" && (
         <div className="flex-1 flex items-center justify-center p-8">
           <div className="w-full max-w-md text-center">
@@ -229,10 +278,8 @@ export default function Home() {
         </div>
       )}
 
-      {/* Prompt / Done steps */}
       {(step === "prompt" || step === "processing" || step === "done") && editedDataUrl && (
         <div className="flex-1 flex flex-col lg:flex-row overflow-hidden" style={{ minHeight: 0 }}>
-          {/* Left: Document */}
           <div className="flex-1 overflow-auto bg-gray-100 p-4 flex flex-col items-center gap-4">
             <img
               src={editedDataUrl}
@@ -250,29 +297,30 @@ export default function Home() {
             )}
           </div>
 
-          {/* Right: Control panel */}
           <div className="lg:w-80 flex-shrink-0 bg-white border-t lg:border-t-0 lg:border-l border-gray-200 flex flex-col">
             <div className="p-5 flex flex-col gap-4 flex-1">
               <h3 className="font-semibold text-gray-900">What to change?</h3>
 
-              {/* History */}
               {history.length > 0 && (
                 <div className="space-y-2">
                   {history.map((h, i) => (
                     <div key={i} className="bg-green-50 border border-green-200 rounded-xl p-3 text-sm">
-                      <p className="text-green-800 font-medium text-xs mb-1">✓ Applied</p>
-                      <p className="text-gray-600">
-                        <span className="line-through text-red-400">{h.oldText}</span>
-                        {" → "}
-                        <span className="text-green-700 font-semibold">{h.newText}</span>
+                      <p className="text-green-800 font-medium text-xs mb-1">
+                        ✓ Applied ({h.edits.length} {h.edits.length === 1 ? "location" : "locations"})
                       </p>
+                      {h.edits.map((e, j) => (
+                        <p key={j} className="text-gray-600">
+                          <span className="line-through text-red-400">{e.oldText}</span>
+                          {" → "}
+                          <span className="text-green-700 font-semibold">{e.newText}</span>
+                        </p>
+                      ))}
                       <p className="text-gray-400 text-xs mt-1">{h.understood}</p>
                     </div>
                   ))}
                 </div>
               )}
 
-              {/* Instruction input */}
               <div className="flex flex-col gap-2">
                 <textarea
                   value={instruction}
@@ -285,8 +333,8 @@ export default function Home() {
                   }}
                   placeholder={
                     history.length === 0
-                      ? 'e.g. "put the date 06/06/2026 on the top"'
-                      : "Another change? e.g. change vessel date to 06/10/2026"
+                      ? 'e.g. "change the date to 06/06/2026"'
+                      : 'Another change? e.g. "update date to 06/10/2026"'
                   }
                   rows={3}
                   className="w-full border border-gray-300 rounded-xl px-4 py-3 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:border-blue-500 resize-none transition-colors"
@@ -313,14 +361,13 @@ export default function Home() {
                 </button>
               </div>
 
-              {/* Examples */}
               <div className="mt-auto pt-4 border-t border-gray-100">
                 <p className="text-xs text-gray-400 mb-2">Examples:</p>
                 <div className="flex flex-col gap-1.5">
                   {[
-                    "put the date 06/06/2026 on the top",
-                    "change vessel date to 05/30/2026",
-                    "update delivery date to 06/10/2026",
+                    "change the date to 06/06/2026",
+                    "change the date at the bottom to 06/01/2026",
+                    "update all dates to 06/10/2026",
                   ].map((ex) => (
                     <button
                       key={ex}
