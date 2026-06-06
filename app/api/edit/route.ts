@@ -14,13 +14,20 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Missing image or instruction" }, { status: 400 });
     }
 
-    const prompt = `You are an expert document editor for FMCSA Bill of Lading documents.
+    const prompt = `You are a precise document editor for FMCSA Bill of Lading documents.
 
 User instruction: "${instruction}"
 
-Analyze this document image carefully. Find the EXACT location of the field the user wants to change.
+Carefully analyze this document and find the EXACT location of the text the user wants to change.
 
-IMPORTANT: Be very precise with coordinates. x and y are the CENTER of the text, as a percentage of the total image width/height (0 = left/top, 100 = right/bottom).
+Rules for coordinates:
+- x = horizontal CENTER of the text as % of image width (0=left edge, 100=right edge)
+- y = vertical CENTER of the text as % of image height (0=top edge, 100=bottom edge)
+- w = width of ONLY the text itself (not the whole cell or row) as % of image width
+- h = height of the text line as % of image height
+- Be very precise — 1% error = visible misalignment
+- bgColor = the background color behind that text (hex, e.g. "#FFFFFF" for white, "#F0EDE8" for cream/off-white)
+- fontFamily = best match: "Arial" for sans-serif printed, "Times New Roman" for serif, "Courier New" for monospaced
 
 Return ONLY valid JSON, nothing else:
 {
@@ -29,10 +36,12 @@ Return ONLY valid JSON, nothing else:
   "newText": "new text to put in its place",
   "x": 72.5,
   "y": 8.3,
-  "w": 11.0,
-  "h": 1.6,
+  "w": 8.0,
+  "h": 1.5,
   "fontSize": 13,
-  "bold": false
+  "bold": false,
+  "bgColor": "#FFFFFF",
+  "fontFamily": "Arial"
 }`;
 
     const response = await ai.models.generateContent({

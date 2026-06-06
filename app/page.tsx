@@ -12,6 +12,8 @@ interface EditResult {
   h: number;
   fontSize: number;
   bold: boolean;
+  bgColor?: string;
+  fontFamily?: string;
 }
 
 type Step = "upload" | "prompt" | "processing" | "done";
@@ -84,16 +86,27 @@ export default function Home() {
           const w = (edit.w / 100) * canvas.width;
           const h = (edit.h / 100) * canvas.height;
 
-          // White out — slightly larger than text area for clean result
-          const pad = 3;
-          ctx.fillStyle = "#FFFFFF";
+          // Sample actual background color from document (beats hardcoded white)
+          let bgColor = edit.bgColor ?? "#FFFFFF";
+          try {
+            const sampleX = Math.max(0, Math.min(canvas.width - 1, Math.round(cx - w / 2 - 8)));
+            const sampleY = Math.max(0, Math.min(canvas.height - 1, Math.round(cy)));
+            const px = ctx.getImageData(sampleX, sampleY, 1, 1).data;
+            bgColor = `rgb(${px[0]},${px[1]},${px[2]})`;
+          } catch {
+            // fall back to Gemini-provided or white
+          }
+
+          const pad = 4;
+          ctx.fillStyle = bgColor;
           ctx.fillRect(cx - w / 2 - pad, cy - h / 2 - pad, w + pad * 2, h + pad * 2);
 
-          // Draw new text — match document style
-          const fontSizePx = h * 0.75;
+          // Match document font
+          const fontSizePx = h * 0.78;
           const weight = edit.bold ? "bold" : "normal";
-          ctx.font = `${weight} ${fontSizePx}px Arial, Helvetica, sans-serif`;
-          ctx.fillStyle = "#000000";
+          const family = edit.fontFamily ?? "Arial";
+          ctx.font = `${weight} ${fontSizePx}px "${family}", Arial, sans-serif`;
+          ctx.fillStyle = "#1a1a1a";
           ctx.textAlign = "center";
           ctx.textBaseline = "middle";
           ctx.fillText(edit.newText, cx, cy);
