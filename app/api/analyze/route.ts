@@ -1,13 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenAI } from "@google/genai";
 
 export const maxDuration = 60;
 
 const PROMPT = `You are an expert at analyzing Bill of Lading (BOL) and Release Instructions documents for FMCSA freight compliance.
 
-Find ALL dates in this document and return their positions as percentage coordinates (0-100) from top-left corner.
+Your task: find ALL dates in this document. Return their approximate positions as percentage coordinates (0-100) from the top-left corner of the image.
 
-Return ONLY valid JSON, no other text:
+Rules:
+- x, y = center of the date text (as % of image width/height)
+- w = width of date text area (as % of image width)
+- h = height of date text area (as % of image height)
+- Include ALL dates: header dates, vessel dates, instruction dates, handwritten dates
+
+Return ONLY valid JSON with no extra text or markdown:
 {
   "dates": [
     {
@@ -16,8 +22,8 @@ Return ONLY valid JSON, no other text:
       "label": "Date",
       "x": 72,
       "y": 8,
-      "w": 12,
-      "h": 2.5
+      "w": 10,
+      "h": 2
     }
   ],
   "docType": "Release Instructions",
@@ -25,7 +31,7 @@ Return ONLY valid JSON, no other text:
 }`;
 
 export async function POST(req: NextRequest) {
-  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
 
   try {
     const body = await req.json();
@@ -35,19 +41,28 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "No image provided" }, { status: 400 });
     }
 
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-
-    const result = await model.generateContent([
-      PROMPT,
-      {
-        inlineData: {
-          data: imageBase64,
-          mimeType: mimeType || "image/jpeg",
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: [
+        {
+          role: "user",
+          parts: [
+            { text: PROMPT },
+            {
+              inlineData: {
+                mimeType: mimeType || "image/jpeg",
+                data: imageBase64,
+              },
+            },
+          ],
         },
+      ],
+      config: {
+        thinkingConfig: { thinkingBudget: 0 },
       },
-    ]);
+    });
 
-    const content = result.response.text();
+    const content = response.text ?? "";
 
     const jsonMatch = content.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
